@@ -289,6 +289,7 @@ bun bin/clean-login.mjs score cancel                  # 停掉信任度评分
 - 没有遥测，也没有账号。唯一的网络调用就是你自己发起的那些：代理测试、信任分页面、身份检测页面、运行时下载，以及供应商自己的登录。
 - 代理、账号、指纹和浏览器配置都在 `~/.config/magpie/magpie-clean-login/`（用 `MAGPIE_CLEAN_LOGIN_DATA` 覆盖；配置根本身用 `MAGPIE_CONFIG_DIR`）。市场目录从 `~/.cache/magpie/` 读取（`MAGPIE_CACHE_DIR`）。续期托管的开通状态与最近记录在同一个目录下的 `renew-hosting.json`，里面只有开关、时间和结果，没有任何凭据。
 - 登录浏览器在 Windows 上解包到 `%LOCALAPPDATA%/magpie-clean-login/camoufox`，在 macOS 上解包到 `~/Library/Caches/magpie-clean-login/camoufox`，在 Linux 上解包到 `$XDG_CACHE_HOME/magpie-clean-login/camoufox`（均可用 `MAGPIE_CLEAN_LOGIN_BROWSER_DIR` 覆盖）。
+- 在无界面的 Linux 上，若未设置 `DISPLAY` 和 `WAYLAND_DISPLAY` 且需要把登录浏览器指向指定 X11 显示（如 `:99`），可用 `MAGPIE_CLEAN_LOGIN_DISPLAY` 显式开启；若需改用系统字体配置而非 Camoufox 默认的防指纹字体配置，可设置 `MAGPIE_CLEAN_LOGIN_FONTCONFIG=system`（`/etc/fonts/fonts.conf`）或自定义的 `fonts.conf` 路径（不会覆盖已有的 `FONTCONFIG_FILE`）。
 - 存下来的代理密码不会到达页面，也不会写进日志。页面 token 每进程一份，只存在于服务送出的页面里。
 
 <a id="contributing"></a>
@@ -296,6 +297,19 @@ bun bin/clean-login.mjs score cancel                  # 停掉信任度评分
 ## 参与贡献
 
 欢迎 pull request。测试套件就是契约：`bun test` 跑全部，一个没有测试的改动就是以后没人敢信的改动。改 `lib/`、`ui/`、`page/` 或 `index.mjs` **不需要自己升版本号**——版本由合并方在合并点分配；`node scripts/check-version-bump.mjs` 仍会拒绝降级或等于已发布的版本号。动手前先读 [AGENTS.md](AGENTS.md) 与 [docs/releasing.md](docs/releasing.md)。
+
+### 提交 Issue 与双线自动分流
+
+提交问题或功能建议时，Issue 表单中的 **预计改动范围 / 风险区域**（`route_scope` 字段）用于自动分流处理执行器（完整规则见 [docs/auto-maintainer.md](docs/auto-maintainer.md)）：
+
+- **`agent:cindy`（Cindy 自动线）**：处理范围明确的低风险 / 简单任务。仅当 `route_scope` 选择以下之一时才会路由到此线：
+  - `纯文档 / README / Issue 模板修改`
+  - `纯文案或不涉及逻辑的简单样式修改`
+  - `纯测试补充`
+  - `单个非核心文件小 Bug（已附完整复现步骤与验收条件）`（须同时填写非空的 **复现步骤** 与 **验收条件**）
+  - 若为功能建议（Feature Request），还要求 **是否需要对应 CLI 支持** 选择 `不需要（仅涉及页面展示或内部逻辑）`。
+- **`agent:agy`（agy 代理线）**：处理常规、复杂、跨平台或涉及核心逻辑 / CLI 的任务。当 `route_scope` 保留默认的 `核心功能 / 复杂改动 / 跨平台 / 不确定`，或缺少上述必要字段、功能建议需要或不确定是否同步 CLI、空白 Issue 以及卡片 **报告问题**（`from-plugin`）提交的 Issue 时，均由 `agent:agy` 接管。
+- **拿不准怎么选？** 直接保留默认的 `核心功能 / 复杂改动 / 不确定` 即可。维护者也可随时手工增删 `agent:cindy` / `agent:agy` 标签改判；若 Cindy 评估后发现超出范围，也会自动退回给 `agent:agy` 接管。
 
 <a id="license"></a>
 

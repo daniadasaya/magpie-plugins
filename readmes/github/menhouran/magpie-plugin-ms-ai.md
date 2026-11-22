@@ -6,12 +6,40 @@
 ## 功能
 
 - **供应商注册**：`modelscope-ai`，`@ai-sdk/openai-compatible`，`https://api-inference.modelscope.ai/v1`。用户已自定义的 provider 配置不会被覆盖。
-- **模型**：登录后从 `GET /v1/models` 拉取账号可见模型，按 OpenCode 完整形态返回（limit / capabilities / api / release_date）。拉不到时用实测可用的内置列表。模型名由 id 推导（`deepseek-ai/DeepSeek-V4.1-Flash-1017` → `DeepSeek V4.1 Flash 1017`），`created` 填成 `release_date`。实测不可调用的条目标 `deprecated`，宿主会过滤掉。
+- **模型**：登录后从 `GET /v1/models` 拉取账号可见模型，按 OpenCode 完整形态返回（limit / capabilities / api / release_date）。拉不到时用实测可用的内置列表。模型名由 id 推导（`deepseek-ai/DeepSeek-V4.1-Flash-1017` → `DeepSeek V4.1 Flash 1017`），`created` 填成 `release_date`。实测不可调用的条目标 `deprecated`，宿主会过滤掉。实测表没有的新 id，上下文窗口从模型仓库 `config.json` 的 `max_position_embeddings` 实取（顶层 / `text_config` / `llm_config` 三处都认，命中缓存 30 分钟、未命中 24 小时），不再一律按 128K 兜底。
 - **推理**：转发时加 `Authorization: Bearer`，上游响应原样返回，故障转移交给 magpie。
 - **每日签到**：每账号每北京日调一次 `GET /api/v1/users/login/info`，该请求即发放触发（服务端幂等）。签到前后读 `/openapi/v1/magicubes/transactions` 校验到账，结果分 `claimed`（新到账）/ `done`（今日已有）/ `inactive`（已触达但无到账）/ `failed`（账单读不到，宿主 30 分钟后重试）。
 - **余额与窗口**：`GET /openapi/v1/magicubes/balance` 取 `available_balance`；卡面按 `expire_days` 分桶报「今日发放」「长期魔粒」，外加参与路由的「合计」。
-- **按档位计费**：厂商按次扣魔粒，分三档——`lite` 0.5 / `standard` 1 / `ultra` 2。这三个字符串是厂商账本里的 `model_tier` 取值，也是厂商唯一公布价格的地方（任何模型接口都不带价格字段）。插件按请求体里的 `model` 取档位给每次调用定价，**未知模型一律按最高档 2 计**——宁可高估消耗，不可高估余额。
-- **余额耗尽即冷却**：厂商真正回答「魔粒不足」的方式是 **HTTP 429 + `{"error":{"message":"insufficient balance"}}`**（2026-11-22 实测，五个零余额账号全部如此），402 也一并当耗尽。插件据此把账号**冷却到下一次发放（北京 00:35）**，不再让宿主按指数退避整天重试；冷却期间不读余额、不发请求。单纯的 429（无该 body）仍按限流原样放行。
+- **按档位计费**：厂商按次扣魔粒，分档——`lite` 0.5 / `standard` 1 / `ultra` 2，另有 `discount` 0.2。
+  这些字符串是厂商账本里的 `model_tier` 取值。价格**不写死**：`GET /openapi/v1/magicubes/spend/rates`
+  （`scene=api_inference`）是厂商自己的计价表，插件每个进程读一次并以它为准，读不到才用内置值。
+  2026-11-22 实拉的表（`unit` 一律是 `request`，即**按次**计价，不是按 token）：
+
+  | `model_tier` | `unit_price` | `min_charge` | 厂商描述 |
+  |---|---|---|---|
+  | `lite` | 0.5 | 0.5 | 轻量模型 0.5魔粒/次 |
+  | `standard` | 1 | 1 | 主流模型 1魔粒/次 |
+  | `ultra` | 2 | 1 | 旗舰模型 2魔粒/次 |
+  | `discount` | 0.2 | 0.2 | 折扣模型 0.2魔粒/次 |
+
+  `min_charge` 是按量计价的**下限**，只在计量结果低于它时才兜底；`ultra` 的 `min_charge`(1) 低于
+  `unit_price`(2)，所以旗舰调用永远按 2 扣，下限不参与。厂商的计价表**只按档位、不按模型**——
+  没有任何接口能回答「这个模型属于哪档」：账本行只有 `model_tier`，**不带模型 id**，`/models`、
+  模型详情页、`/.well-known/openapi.json` 也都没有。所以模型→档位的映射只能**实测**：拿某个模型
+  真发一次请求，再读账本那一行的 `model_tier`。这是插件自己维护的表（2026-11-22 扫五个账号得出），
+  插件按请求体里的 `model` 取档位给每次调用定价，**未知模型一律按最高档 2 计**——宁可高估消耗，
+  不可高估余额。
+- **余额耗尽即冷却**：厂商真正回答「魔粒不足」有两种面孔——推理网关是 **HTTP 429 +
+  `{"error":{"message":"insufficient balance"}}`**（2026-11-22 实测，五个零余额账号全部如此），
+  openapi 面是 **403 + `code=QuotaLimitExceed`**（官方 SDK 的状态映射）；402 也一并当耗尽。
+  插件据此把账号**冷却到下一次发放（北京 00:00）**，不再让宿主按指数退避整天重试；冷却期间
+  不读余额、不读账单、不发请求。403 若无 quota 字样则是「模型无权限」，**不冷却**。
+- **发放在 0 点，不是 00:35**：厂商账本里每条发放行的 `expire_at` 正好是发放时刻 + 24h，
+  五个账号三周共 146 次发放实测落在**北京 00:00:21 – 00:01:35**（2026-11-22）。所以冷却到
+  次日 **00:02**（留两分钟余量）；0 点整放行会有一次请求正好撞在发放落地前，而被拒的请求
+  会把账号重新压回一整天冷却——为早几十秒的一次调用赔上一整天。
+- **0 点后的短暂窗口另行处理**：北京 0 点后 10 分钟内发放可能还没到账，此时余额为 0 是
+  「还没发」而非「用完了」，冷却只等 **2 分钟**就重试，不按整天算。
 - **鉴权口径**：余额走官方 Bearer（`/.well-known/openapi.json` 的 Magicube 板块），被拒回落会话 Cookie；账单与签到是网站内部接口，只能 Cookie。
 - **账号显示名**：先用官方 `/openapi/v1/users/me`（Bearer、无副作用）把用户名写回账号，答不出才回落 `login/info`（它会顺带触发签到）。多账号不会显示成 `API key …xxxx`。
 
@@ -79,7 +107,7 @@
 - **窗口名固定，数字只进 `display`**。额度历史（`quota-history.json`）按窗口名分线记录，名字里
   带「剩 230」会让每个数值都成为一条新历史线。窗口名恒为 `今日发放` / `长期魔粒` / `合计`。
 - **`aside: true` 的窗口不参与路由**。宿主 `allowanceOf` 跳过 aside，所以只有「合计」进
-  `For` / `Count` / `Pace`。它的 `limit` 是余额 + 当日已用，`span: 86400` 与次日北京 00:35 的
+  `For` / `Count` / `Pace`。它的 `limit` 是余额 + 当日已用，`span: 86400` 与次日北京 00:02 的
   `resetsAt` 让 90% 保留线落在总余额上；余额归零时 `used: 100`，宿主停用到下次发放。有余额时
   百分比压在 99，避免宿主只看 `used >= 100` 误停还有钱的账号。
 - **当日魔粒 24 小时滚动过期，不结转**。`runsOutAt` / `runsOut` 只报当日发放那部分
@@ -92,15 +120,20 @@
   同样按估算金额算，不是按次数。
 - **账本分页上限是 50 行**：厂商无视 `page_size=100/200`，一律按 50 答（2026-11-22 实测）。
   插件按 50 一页翻到当日记录跑完为止——繁忙的一天今日发放排在上百条消费之后，只读一页会漏掉。
-- **耗尽即冷却**：厂商答 429 + `insufficient balance`（或 402）时，账号被冷却到北京次日 00:35，
-  期间不读余额、不发请求；供应商真正答过一次之后，`noteCall` 会因为成功调用而解除冷却
-  （厂商还在服务就说明还有魔粒）。单纯的 429 是限流，原样交回、不读余额。
+- **耗尽即冷却**：厂商答 429 + `insufficient balance`（或 403 + `QuotaLimitExceed`、402）时，
+  账号被冷却到北京次日 00:02，期间不读余额、不发请求；供应商真正答过一次之后，`noteCall`
+  会因为成功调用而解除冷却（厂商还在服务就说明还有魔粒）。单纯的 429 是限流，原样交回、
+  不读余额；403 无 quota 字样是模型无权限，也不冷却。
 - **登录判定**：401 判令牌失效；402（额度）、403（风控 / 模型无权限）、429（限流）都标 `kept`，
   不误伤账号。网页接口同理，只有 401 算过期。
 - **模型列表的 403 保留内置列表**，不标过期（是 scope / 风控，不是丢令牌）。
 - **时区**：账本 `gmt_created` 是北京钟面字符串（`2026-10-29 01:02:24`），读成 UTC 会让到期早 8 小时；统一按北京解析后转 ISO。
-- **并发**：每账号 2 路（`magpie.maxConcurrency: 2`）。厂商标称单并发，但 11 天生产日志（3134 次、
-  96.5% 成功）零 429；真瓶颈是单账号日耗 93% 额度。再现 429 峰值可降回 1。
+- **并发**：每账号 1 路（`magpie.maxConcurrency: 1`），插件内再在转发点按 token 复核一遍
+  （`gateAcquire`）——同账号第二个请求等待，账号之间并行。2026-11-23 五账号 2 路叠加
+  曾把当日 1000 魔粒 100 分钟烧干（519 次旗舰调用）。
+- **逐笔魔粒归因**：已实测价格的模型，200 响应回写 `usage.credit`（计价 = 该模型档位单价；
+  流式响应在 `[DONE]` 前补一条 usage chunk，请求未带时自动加 `stream_options.include_usage`），
+  magpie 账本逐行显示这次调用花了几魔粒。未知价格的模型不写，不猜。
 - 所有网络调用 20 秒超时；状态按令牌为键并限量修剪（256），常驻宿主不会无限增长。
 
 ## 安装
@@ -127,18 +160,22 @@ magpie quota
 ## 开发
 
 ```sh
-bun test        # 65 个用例，全部离线
+bun test        # 71 个用例，全部离线
 bunx tsc --noEmit
 ```
 
 测试用本地 fake server 覆盖：信封双大小写、签到四档结果（含账单校验与 1.5s 重试）、余额窗口分桶
 与 aside、Bearer/Cookie 双鉴权回落、401/402/403/429 各自的语义、模型拉取与完整形态回退、
-30 分钟缓存与估算、**按档位计价**（lite 0.5 / standard 1 / ultra 2 / 未知按 2）、**请求体里的
-model 决定这次调用价**、**账本 50 行分页**、**耗尽冷却一天**。运行时不访问外网（`nonet.ts` 拦截）。入口与测试都是 TypeScript，Bun 直接加载。
+30 分钟缓存与估算、**按档位计价**（lite 0.5 / standard 1 / ultra 2 / discount 0.2 / 未知按 2）、
+**厂商自己的计价表优先**、**请求体里的
+model 决定这次调用价**、**账本 50 行分页**、**耗尽冷却一天**（429 insufficient balance /
+403 QuotaLimitExceed）、**403 模型无权限不冷却**、**冷却期间不读厂商**、**改名的模型 id 仍按原档计价**
+（`zai-org/GLM-5.2` 与旧的 `ZhipuAI/GLM-5.2` 同为旗舰）。运行时不访问外网（`nonet.ts` 拦截）。入口与测试都是 TypeScript，Bun 直接加载。
 
 插件契约：`index.ts` 默认导出 `ModelScopeAuthPlugin`（`config` / `auth` / `provider` 三个钩子），
 测试用的内部函数放在导出的 `_internal` **对象**里——magpie 把每个导出的*函数*当插件，对象不会
-被误认。`package.json` 的 `magpie.maxConcurrency` 声明每账号在途数。
+被误认。`package.json` 的 `magpie.maxConcurrency` 声明每账号在途数；转发点的
+`gateAcquire` 按 token 复核同账号串行。
 
 ## 范围
 
