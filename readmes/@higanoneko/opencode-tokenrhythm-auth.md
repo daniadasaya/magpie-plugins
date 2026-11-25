@@ -71,12 +71,7 @@ curl https://tokenrhythm.studio/v1/decision \
 
 ## Balance card
 
-The wallet shows as a single spendable balance in the currency's own glyph,
-reading exactly like magpie's built-in balance cards:
-
-```
-¥185.93
-```
+The wallet shows as a single spendable balance in the currency's own glyph.
 
 - **Live wallet** — refreshed with the account, to two decimals
 - **Money trend line** — because the card reports a balance rather than a
