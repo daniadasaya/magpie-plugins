@@ -30,13 +30,31 @@ CASA 的 Gemini 流式响应可能把工具名称和参数拆成不同调用，�
 
 “工具通用”指客户端声明并执行的工具。厂商托管的 `web_search`、`file_search`、Google Search、代码执行与文档检索等需要独立执行器；插件遇到不支持的声明会明确报错。MagPie 自身提供的搜索与工具编排仍由 MagPie 负责。
 
+2026-11-28 追加[真流式复测](./docs/真流式复测.md)：三个 Gemini 模型均观察到正文提前分段到达，单工具、并行工具及两轮结果回传通过；Carbon、Neon 绕开插件直连 CASA 的工具往返也通过。此前工具拆分故障本批未复现，缓存仍不稳定。生产默认继续使用同步轨道；`npm run audit:stream` 可独立复测，不改运行配置。
+
+**后续真实 Codex CLI 验收发现新的边界：** 插件真流式下 Carbon 两次工具参数校验失败，Neon 在一次命令后等待超时；关闭插件、将 MagPie API 设为 Chat 并固定 CASA 基础模型名后，两模型均完成读取、补丁修改、执行测试、写入与复核文件。尚不建议把插件真流式作为默认路径。详见 [Codex CLI 对照实验](./docs/CodexCLI对照实验.md)。
+
+## 0.2.6 MagPie 升级兼容
+
+- 适配 MagPie 0.1.5037 的模型档位家族：将已配置 Gemini 基础模型衍生的 `-minimal/-low/-medium/-high/-xhigh` 传输名还原为 CASA Chat 模型名，并保留推理强度，修复升级后“模型不可用”的 404。
+- 完整配置名、显式推理档位及预算优先，不猜测 `-max` 等模型名，也不提升模型本身不支持的档位。
+- 诊断同时记录传输模型、上游模型和上游档位；新增 `npm run audit:effort` 核对本机 MagPie 四协议请求与原厂商账本。
+- 126 项 Node 测试、50 项 Bun 重点测试通过；Carbon/high 与 Neon/xhigh 候选代码真实请求通过。宿主更新后的结果与标题问题边界见 [升级与推理档位修复](./docs/升级与推理档位修复.md)。
+
+## 0.2.5 Claude Desktop 工具定义兼容
+
+- 修复合法 JSON Schema 2020-12 被误判为“工具 JSON Schema 无效”的 400。按声明分别使用 draft-06/07、2019-09、2020-12 校验器，保留各版本约束。
+- 支持同一请求混用不同草案，以及不同工具复用 `$id`；工具参数与结构化输出共用校验机制。
+- Gemini 类型转换只遍历 Schema 位置，保留业务数据、属性名和扩展字段。错误日志记录草案、问题类别及工具名哈希。
+- 124 项 Node 测试、32 项 Bun 重点测试通过；失败请求中的 48 个真实工具定义已通过候选代码及 GitHub 更新后本机 MagPie 的 JSON / SSE 两轮验收。可运行 `npm run audit:schema` 复核本机 MagPie；详见 [Claude 工具 Schema 修复](./docs/Claude工具Schema修复.md)。
+
 ## 0.2.4 输出与请求参数修复
 
 - 修复 Gemini `thinkingLevel` 在桥内丢失的问题，映射到上游 `reasoning_effort`。`thinking:drop` 只处理思考文本，不关闭请求的推理强度。
 - 客户端未指定输出预算时，CASA 通道补充 `max_tokens:65536`；显式预算原样保留。同步等待上限调至 600 秒，SSE 注释心跳保持 8 秒。
 - 保留 Responses / Gemini / Anthropic 的 JSON 输出约束，标题请求仍交给原模型处理；Hook 不重写或吞掉标题。
 - 输出预算耗尽时正确返回 `response.incomplete` / `length` / `max_tokens` / `MAX_TOKENS`，不发送截断的可执行工具参数。
-- 新增不含正文的预算、推理档位、输出格式与结束原因诊断，使用 `npm run audit:parameters` 可验证已运行的本机 MagPie。详情见 [输出、推理与标题修复](./docs/输出推理与标题修复.md)。
+- 新增不含正文的预算、推理档位、输出格式与结束原因诊断，使用 `npm run audit:parameters` 可验证已运行的本机 MagPie。Node 105 项测试与 Bun 29 项重点复核通过；已从 GitHub 更新后验证四协议标题、真实 22,972 token 长输出和 CASA 网页推理强度。详情见 [输出、推理与标题修复](./docs/输出推理与标题修复.md)。
 
 ## 0.2.3 更新
 
@@ -56,7 +74,7 @@ CASA 的 Gemini 流式响应可能把工具名称和参数拆成不同调用，�
 
 ## 从 GitHub 安装与更新
 
-兼容基线是 MagPie `0.1.4572`。先保留原 `casa` 供应商、Chat Completions 地址和名为 `gemini` 的已启用密钥。三个 Gemini 模型的 API 应在 MagPie 中设为 `gemini`。
+兼容基线为 MagPie `0.1.4572`，0.2.6 增加 `0.1.5037` 的档位模型名适配。旧宿主存在 Gemini 4 `xhigh` 降为 `high` 的问题，需要升级宿主才能保留最高档位。先保留原 `casa` 供应商、Chat Completions 地址和名为 `gemini` 的已启用密钥。三个 Gemini 模型的 API 应在 MagPie 中设为 `gemini`。
 
 ```sh
 magpie plugin add github:alanbulan/magpie-casa-gemini-compat
@@ -87,7 +105,7 @@ magpie plugin off github:alanbulan/magpie-casa-gemini-compat
 
 默认配置位于 [config.json](./config.json)，严格结构见 [config.schema.json](./config.schema.json)。需要自定义时，将配置复制到插件目录之外，通过 MagPie `plugins.json` 中该插件条目的 `options.configPath` 指向它；不要改动其他插件条目。完整示例见 [配置说明](./docs/配置说明.md)。
 
-默认是轨道 A（同步整包），每 8 秒发送 `: keep-alive` 注释。轨道 B 需要显式 `streamVerified:true`；当前 CASA 工具拆分故障下不建议启用。
+默认是轨道 A（同步整包），每 8 秒发送 `: keep-alive` 注释。轨道 B 需要显式 `streamVerified:true`；合成工具测试通过，但后续真实 Codex CLI 未通过完整任务验收，详见[对照实验](./docs/CodexCLI对照实验.md)。
 
 默认读取 `$XDG_CONFIG_HOME/magpie/providers.json`，未设置时读取 `~/.config/magpie/providers.json`。日志位于该配置目录下的 `plugin-work/casa-gemini-compat/diagnostics.jsonl`；`options.runtimeDir` 可以改位置。日志记录哈希、计数、结构掩码与重试轨迹，不记录真实密钥、用户正文或工具参数。会话默认只在内存保存，重启后会重新冷校准；可选 `sessions.statePath` 会把会话正文写入权限受限的本地状态文件，需自行管理保留时间。
 
